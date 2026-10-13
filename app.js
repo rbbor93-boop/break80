@@ -376,19 +376,43 @@ async function nearbyCourses(pos) {
     .slice(0, 25);
 }
 
-async function apiSearch(q) {
+async function apiGet(path) {
   let r;
   try {
-    r = await fetch(`${API}/search?search_query=${encodeURIComponent(q)}`, {
-      headers: { Authorization: `Key ${db.golfApiKey}` },
-    });
+    r = await fetch(`${API}${path}`, { headers: { Authorization: `Key ${db.golfApiKey}` } });
   } catch {
     throw new Error("Couldn't reach GolfCourseAPI — check your signal and try again.");
   }
   if (r.status === 401 || r.status === 403) throw new Error('The course database rejected our API key. Enter the scorecard manually for now.');
   if (r.status === 429) throw new Error('GolfCourseAPI daily limit reached — try again tomorrow or enter the card manually.');
-  if (!r.ok) throw new Error(`Course search failed (${r.status})`);
-  return (await r.json()).courses || [];
+  if (!r.ok) throw new Error(`Course lookup failed (${r.status})`);
+  return r.json();
+}
+
+// Search results only carry a summary (tee counts); the scorecard needs a second call
+const apiSearch = async q => (await apiGet(`/search?search_query=${encodeURIComponent(q)}`)).courses || [];
+
+function summaryFromApi(c) {
+  const loc = c.location || {};
+  const club = c.club_name, course = c.course_name;
+  return {
+    apiId: c.id,
+    id: 'api-' + c.id,
+    name: club && course && club !== course ? `${club} – ${course}` : club || course || 'Course',
+    city: [loc.city, loc.state].filter(Boolean).join(', '),
+    lat: loc.latitude ?? null,
+    lon: loc.longitude ?? null,
+    teeCount: Object.values(c.tees || {}).reduce((a, t) => a + (Array.isArray(t) ? t.length : +t || 0), 0),
+  };
+}
+
+// Full scorecard for one course — from the shared course list if anyone has loaded it before
+async function loadCourse(summary) {
+  const known = db.courses.find(c => c.id === summary.id && c.tees?.length);
+  if (known) return known;
+  const course = fromApi((await apiGet(`/courses/${encodeURIComponent(summary.apiId)}`)).course);
+  if (!course.tees.length) throw new Error(`No scorecard is available for ${course.name}. Enter it manually.`);
+  return course;
 }
 
 // "Royal Oaks Golf & Country Club" → "royal oaks"
@@ -400,7 +424,10 @@ const simplifyName = q =>
 
 function fromApi(c) {
   const tees = [];
-  for (const [gender, list] of Object.entries(c.tees || {})) {
+  // Men's tees first: they're the usual pick and the API lists women's first
+  for (const gender of ['male', 'female']) {
+    const list = c.tees?.[gender];
+    if (!Array.isArray(list)) continue;
     for (const t of list || []) {
       if (!t.holes?.length) continue;
       tees.push({
@@ -461,7 +488,7 @@ async function doSearch(q, near) {
     const short = simplifyName(q);
     if (!list.length && short && short !== q.toLowerCase()) list = await apiSearch(short);
     const ref = near || f.pos;
-    const cs = list.map(fromApi).filter(c => c.tees.length);
+    const cs = list.map(summaryFromApi);
     if (ref) {
       cs.forEach(c => (c.dist = c.lat != null ? miles(ref, c) : null));
       cs.sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
@@ -475,8 +502,22 @@ async function doSearch(q, near) {
   }
   f.status = 'idle';
   if (ui.view !== 'find') return;
-  if (autoPick) go('tees', { course: autoPick, span: 'all' });
+  if (autoPick) openCourse(autoPick);
   else render();
+}
+
+async function openCourse(summary) {
+  const f = ui.find;
+  Object.assign(f, { status: 'busy', busyMsg: `Loading the ${summary.name} scorecard…`, error: '' });
+  render();
+  try {
+    const course = await loadCourse(summary);
+    f.status = 'idle';
+    if (ui.view === 'find') go('tees', { course, span: 'all' });
+  } catch (e) {
+    Object.assign(f, { status: 'idle', error: e.message });
+    renderFind();
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -818,7 +859,7 @@ const views = {
         </form>
         ${f.status === 'busy' ? `<p class="muted center spin">${esc(f.busyMsg)}</p>` : ''}
         ${f.error ? `<div class="note warn">${esc(f.error)}</div>` : ''}
-        ${f.results?.length ? section('Scorecards found', f.results.map((c, i) => row('pickResult', i, c.name, [c.city, `${c.tees.length} tees`].filter(Boolean).join(' · '), distStr(c.dist))).join('')) : ''}
+        ${f.results?.length ? section('Scorecards found', f.results.map((c, i) => row('pickResult', i, c.name, [c.city, c.teeCount ? `${c.teeCount} tees` : ''].filter(Boolean).join(' · '), distStr(c.dist))).join('')) : ''}
         ${saved.length ? section('Your courses', saved.map(c => row('pickSaved', c.id, c.name, c.city || `${c.tees.length} tees`, distStr(c.dist))).join('')) : ''}
         ${f.nearby?.length
           ? section('Nearby (GPS)', f.nearby.map((c, i) => row('pickNearby', i, c.name, '', `${num(c.dist)} mi`)).join(''))
@@ -1152,7 +1193,7 @@ const actions = {
   },
   locate,
   pickNearby: i => doSearch(ui.find.nearby[i].name, ui.find.nearby[i]),
-  pickResult: i => go('tees', { course: ui.find.results[i], span: 'all' }),
+  pickResult: i => openCourse(ui.find.results[i]),
   pickSaved: id => go('tees', { course: db.courses.find(c => c.id === id), span: 'all' }),
   span: v => { ui.span = v; render(); },
   tee: i => startRound(ui.course, +i),
