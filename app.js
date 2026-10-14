@@ -215,6 +215,9 @@ const toYd = (v, u) => (u === 'm' ? v * YD_PER_M : v);
 const showPutt = (ft, u) => (ft == null ? null : u === 'm' ? Math.round((ft / FT_PER_M) * 10) / 10 : Math.round(ft));
 const toFt = (v, u) => (u === 'm' ? v * FT_PER_M : v);
 const fmtPutt = ft => (db.units === 'm' ? `${num(ft / FT_PER_M)} m` : `${num(ft)} ft`);
+// How hard the day played, rated by the player when they save the round
+const CONDITIONS = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
+const condLabel = r => (CONDITIONS[r.conditions] ? `${CONDITIONS[r.conditions]} conditions` : '');
 const PUTT_CHIPS = { yd: [3, 5, 8, 10, 15, 20, 30, 40, 60], m: [1, 1.5, 2, 3, 4, 5, 7, 10, 15] };
 const APPROACH_CHIPS = { yd: [50, 75, 100, 125, 150, 175, 200, 225], m: [50, 75, 100, 125, 150, 175, 200] };
 
@@ -343,6 +346,7 @@ function startRound(course, teeIdx) {
       score: null, putts: null, firstPutt: null, fairway: null, girOverride: null,
       dirt: false, approach: null, penalties: 0, shortSide: false,
     })),
+    conditions: null,
     done: false,
   };
   db.rounds.unshift(r);
@@ -718,11 +722,24 @@ function roundTable(rounds) {
     <tbody>${rounds.map(r => {
       const s = calc(r.holes);
       return `<tr>
-        <th><button class="rt-round" data-a="openRound" data-v="${r.id}"><b>${d(r.date)}${s.holes !== 18 ? ` <small>· ${s.holes}h</small>` : ''}</b><small>${esc(r.course)}</small></button></th>
+        <th><button class="rt-round" data-a="openRound" data-v="${r.id}"><b>${d(r.date)}${s.holes !== 18 ? ` <small>· ${s.holes}h</small>` : ''}</b><small>${esc(r.course)}</small>${r.conditions ? `<small>${CONDITIONS[r.conditions]}</small>` : ''}</button></th>
         ${STATS.map(st => `<td>${roundVal(st, s)}</td>`).join('')}
       </tr>`;
     }).join('')}</tbody>
   </table></div>`;
+}
+
+// Average score to par in each kind of conditions the player has rated
+function byConditions(rounds) {
+  const score = STATS[0];
+  const rows = Object.entries(CONDITIONS).map(([k, l]) => {
+    const rs = rounds.filter(r => r.conditions === k);
+    if (!rs.length) return '';
+    const v = statRate(score, calc(rs.flatMap(r => r.holes)));
+    return `<div class="row static"><span class="row-main"><strong>${l}</strong><small>${rs.length} round${rs.length === 1 ? '' : 's'}</small></span>
+      <span class="row-right"><b>${v == null ? '–' : score.fmt(v)}</b>&nbsp;<small>per 18</small></span></div>`;
+  }).join('');
+  return rows ? section('Score by conditions', rows) : '';
 }
 
 // "Last k rounds vs the ones before" — needs at least 4 rounds to say anything
@@ -1071,10 +1088,15 @@ const views = {
     const mine = canEdit(r);
     return `${bar(r.course, mine && !r.done ? 'hole' : 'stats')}
       <main class="stack">
-        <p class="muted"><b class="ink">${esc(playerName(r.playerId))}</b> · ${fmtDate(r.date)} · ${esc(r.tee)}${r.rating && r.slope ? ` · ${r.rating} / ${r.slope}` : ''}</p>
+        <p class="muted"><b class="ink">${esc(playerName(r.playerId))}</b> · ${fmtDate(r.date)} · ${esc(r.tee)}${r.rating && r.slope ? ` · ${r.rating} / ${r.slope}` : ''}${!mine && r.conditions ? ` · ${condLabel(r)}` : ''}</p>
         ${scorecard(r, mine)}
         <h2>Round stats</h2>
         ${tiles(s, false)}
+        ${mine ? `
+        <div class="field col">
+          <div class="lbl">Conditions<small>How hard did the course play today? Think wind, temperature, rain, green speed and pin positions.</small></div>
+          <div class="seg three">${Object.entries(CONDITIONS).map(([k, l]) => segBtn('cond', k, l, r.conditions === k)).join('')}</div>
+        </div>` : ''}
         ${!mine ? '' : r.done
           ? `<button class="btn" data-a="reopen">Edit round</button>`
           : `<button class="btn primary big" data-a="finish">Finish &amp; save round</button>`}
@@ -1096,7 +1118,8 @@ const views = {
           ${tiles(s, true)}
           <h2>Round by round</h2>
           <p class="muted small">Tap a round to see its scorecard${pid === db.playerId ? ', edit it or delete it' : ''}.</p>
-          ${roundTable(rounds)}`
+          ${roundTable(rounds)}
+          ${byConditions(rounds)}`
           : `<p class="muted">${pid === db.playerId ? 'Finish a round to see your stats here.' : 'No finished rounds yet.'}</p>`}
         ${open.length ? section('In progress', open.map(r => row('openRound', r.id, r.course, `${fmtDate(r.date)} · ${r.tee}`, thru(r))).join('')) : ''}
       </main>`;
@@ -1123,7 +1146,7 @@ const views = {
         </div>
         ${pts.length >= 2 ? chart(st, pts) : '<p class="muted">Finish at least 2 rounds that record this stat to see a trend.</p>'}
         ${pts.length ? section('Each round', pts.slice().reverse().map(p =>
-          row('openRound', p.r.id, p.r.course, [fmtDate(p.r.date), statSub(st, p.s, false)].filter(Boolean).join(' · '), `<b>${roundBig(st, p.s)}</b>`)).join('')) : ''}
+          row('openRound', p.r.id, p.r.course, [fmtDate(p.r.date), condLabel(p.r), statSub(st, p.s, false)].filter(Boolean).join(' · '), `<b>${roundBig(st, p.s)}</b>`)).join('')) : ''}
       </main>`;
   },
 
@@ -1157,7 +1180,7 @@ const views = {
           : `<p class="muted">${db.rounds.some(r => r.done) ? 'Nobody has recorded this stat yet.' : 'No finished rounds yet. Be the first!'}</p>`}
         ${feed.length ? section('Latest rounds', feed.map(r => {
           const s = calc(r.holes);
-          return row('openRound', r.id, `${playerName(r.playerId)} · ${r.course}`, `${fmtDate(r.date)} · ${r.tee}${s.holes !== 18 ? ` · ${s.holes} hole${s.holes === 1 ? '' : 's'}` : ''}`,
+          return row('openRound', r.id, `${playerName(r.playerId)} · ${r.course}`, `${[fmtDate(r.date), r.tee, condLabel(r)].filter(Boolean).join(' · ')}${s.holes !== 18 ? ` · ${s.holes} hole${s.holes === 1 ? '' : 's'}` : ''}`,
             `<b>${s.score}</b>&nbsp;<small>(${toParStr(s.score - s.par)})</small>`);
         }).join('')) : ''}
       </main>`;
@@ -1257,12 +1280,12 @@ function download(name, text, type) {
 }
 
 function toCsv() {
-  const cols = ['player', 'date', 'course', 'tee', 'hole', 'par', 'yards', 'hcp', 'score', 'to_par', 'putts', 'first_putt_ft', 'fairway',
+  const cols = ['player', 'date', 'course', 'tee', 'conditions', 'hole', 'par', 'yards', 'hcp', 'score', 'to_par', 'putts', 'first_putt_ft', 'fairway',
     'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'par5_bogey', 'short_sided'];
   const b = v => (v == null ? '' : v ? 1 : 0);
   const q = v => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v);
   const rows = db.rounds.flatMap(r => r.holes.filter(h => h.score != null).map(h => [
-    playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, h.n, h.par, showLen(h.yardage, 'yd'), h.hcp, h.score, h.score - h.par, h.putts, showPutt(h.firstPutt, 'yd'),
+    playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, r.conditions || '', h.n, h.par, showLen(h.yardage, 'yd'), h.hcp, h.score, h.score - h.par, h.putts, showPutt(h.firstPutt, 'yd'),
     h.par >= 4 ? h.fairway : '', h.par >= 4 ? b(h.dirt) : '', showLen(D.approach(h), 'yd'),
     b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(D.shortBogey(h)),
     h.par === 5 ? b(D.par5Bogey(h)) : '', b(h.shortSide),
@@ -1324,6 +1347,7 @@ const actions = {
   finish: () => {
     const r = curRound();
     const missing = r.holes.filter(h => h.score == null).length;
+    if (!r.conditions) return alert("Rate today's conditions (easy, normal or hard) before saving the round.");
     if (missing && !confirm(`${missing} hole${missing === 1 ? ' has' : 's have'} no score. Finish anyway?`)) return;
     finishRound(r);
     go('stats', { statsPlayer: null });
@@ -1337,6 +1361,13 @@ const actions = {
     db.active[db.playerId] = r.id;
     touch(r);
     go('hole', { hole: 0 });
+  },
+  cond: v => {
+    const r = curRound();
+    if (!canEdit(r)) return;
+    r.conditions = r.conditions === v ? null : v;
+    touch(r);
+    render();
   },
   del: () => {
     const r = curRound();
