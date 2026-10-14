@@ -253,7 +253,6 @@ const D = {
     return t == null ? null : t <= h.par - 1;
   },
   threePutt: h => (h.putts == null ? null : h.putts >= 3),
-  par5Bogey: h => (h.par !== 5 || h.score == null ? null : h.score > h.par),
   // A par 3 tee shot is the approach: use the hole length unless one was entered
   approach: h => h.approach ?? (h.par === 3 ? h.yardage ?? null : null),
   // Bogey or worse after an approach from inside 150 yards that didn't follow a DIRT drive
@@ -274,7 +273,6 @@ function calc(holes) {
   const pt = p.filter(h => h.putts != null);
   const girPt = pt.filter(h => D.gir(h) === true);
   const fp = p.filter(h => h.firstPutt != null);
-  const p5 = p.filter(h => h.par === 5);
   const tee = p.filter(h => h.par >= 4);
   const inside = p.filter(h => D.approach(h) != null && D.approach(h) < SHORT_APPROACH_YD && !h.dirt);
 
@@ -291,7 +289,6 @@ function calc(holes) {
     fpN: fp.length, fp: sum(fp, h => h.firstPutt),
     dirtN: tee.length, dirt: cnt(tee, h => h.dirt),
     insideN: inside.length, shortBog: cnt(inside, h => h.score > h.par),
-    p5N: p5.length, p5Bog: cnt(p5, h => h.score > h.par),
     shortSide: cnt(p, h => h.shortSide), missN: cnt(g, h => !D.gir(h)),
     pen: sum(p, h => h.penalties),
   };
@@ -591,12 +588,11 @@ const toggle = (action, label, on, disabled = false) => `
   </button>`;
 
 function autos(h) {
-  const g1 = D.gir1(h), tp = D.threePutt(h), p5 = D.par5Bogey(h), sb = D.shortBogey(h);
+  const g1 = D.gir1(h), tp = D.threePutt(h), sb = D.shortBogey(h);
   return `<div class="autos">
     <span class="pill ${g1 ? 'good' : ''}">GIR+1: ${yn(g1)}</span>
     <span class="pill ${tp ? 'bad' : ''}">3-putt: ${yn(tp)}</span>
     <span class="pill ${sb ? 'bad' : ''}">Bogey inside 150: ${yn(sb)}</span>
-    ${h.par === 5 ? `<span class="pill ${p5 ? 'bad' : ''}">Par 5 bogey: ${yn(p5)}</span>` : ''}
   </div>`;
 }
 
@@ -655,7 +651,6 @@ const STATS = [
     val: s => (s.fpN ? s.fp / s.fpN : null), fmt: fmtPutt, tick: v => num(db.units === 'm' ? v / FT_PER_M : v),
     sub: s => `avg of ${s.fpN} hole${s.fpN === 1 ? '' : 's'}` },
   countStat('shortBog', 'Bogeys from inside 150', '<150 bogey', s => [s.shortBog, s.insideN], 'approaches inside 150 (no DIRT)'),
-  pctStat('p5', 'Par 5 bogeys', 'P5 bogey', 'low', s => [s.p5Bog, s.p5N], 'par 5s'),
   countStat('short', 'Short-sided', 'Short-sided', s => [s.shortSide, s.missN], 'missed greens'),
   { key: 'pen', label: 'Penalties', short: 'Pens', better: 'low', per18: true,
     val: s => (s.holes ? s.pen : null), fmt: v => num(v), tick: v => num(v) },
@@ -1281,14 +1276,13 @@ function download(name, text, type) {
 
 function toCsv() {
   const cols = ['player', 'date', 'course', 'tee', 'conditions', 'hole', 'par', 'yards', 'hcp', 'score', 'to_par', 'putts', 'first_putt_ft', 'fairway',
-    'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'par5_bogey', 'short_sided'];
+    'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'short_sided'];
   const b = v => (v == null ? '' : v ? 1 : 0);
   const q = v => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v);
   const rows = db.rounds.flatMap(r => r.holes.filter(h => h.score != null).map(h => [
     playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, r.conditions || '', h.n, h.par, showLen(h.yardage, 'yd'), h.hcp, h.score, h.score - h.par, h.putts, showPutt(h.firstPutt, 'yd'),
     h.par >= 4 ? h.fairway : '', h.par >= 4 ? b(h.dirt) : '', showLen(D.approach(h), 'yd'),
-    b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(D.shortBogey(h)),
-    h.par === 5 ? b(D.par5Bogey(h)) : '', b(h.shortSide),
+    b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(D.shortBogey(h)), b(h.shortSide),
   ]));
   return [cols, ...rows].map(r => r.map(q).join(',')).join('\n');
 }
