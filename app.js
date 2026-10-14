@@ -606,17 +606,25 @@ function teeInfo(t, u) {
 
 /* ------------------------------------------------------------------ *
  * Stat definitions — one list drives the tiles, the round-by-round
- * table and the trend charts.
+ * table, the trend charts and the leaderboard.
  *   val(s)  this stat for one round or many (s = calc(...)), null if not recorded
  *   per18   val is a count: averages and charts scale it to 18 holes (over n(s) holes)
- *   cell(s) how one round's result reads in tiles and tables (default: fmt(val))
+ *   of(s)   [count, out of] when the stat is a share of something; shown as
+ *           both the number and the percentage everywhere
+ *   noun    what `of` counts, e.g. "fairways"
+ *   cell(s) how one round's result reads (default: fmt(val))
  *   tick(v) short axis label
  * ------------------------------------------------------------------ */
 
 const pctOf = (a, b) => (b ? (100 * a) / b : null);
 const fmtPct = v => `${Math.round(v)}%`;
-const pctStat = (key, label, short, better, a, b, sub) =>
-  ({ key, label, short, better, val: s => pctOf(a(s), b(s)), fmt: fmtPct, tick: fmtPct, sub });
+// A percentage of holes, fairways, greens…: ranked on the percentage
+const pctStat = (key, label, short, better, of, noun) =>
+  ({ key, label, short, better, of, noun, val: s => pctOf(...of(s)), fmt: fmtPct, tick: fmtPct });
+// A count of holes, ranked per 18 holes; `of` adds the percentage alongside
+const countStat = (key, label, short, of, noun, n) =>
+  ({ key, label, short, better: 'low', per18: true, of, noun, n,
+    val: s => ((n ? n(s) : s.holes) ? of(s)[0] : null), fmt: v => num(v), tick: v => num(v) });
 
 const STATS = [
   { key: 'score', label: 'Score', short: 'Score', better: 'low', per18: true,
@@ -624,35 +632,27 @@ const STATS = [
     fmt: v => toParStr(+v.toFixed(1)), tick: v => toParStr(+v.toFixed(1)),
     cell: s => `${s.score} (${toParStr(s.score - s.par)})`,
     sub: (s, avg) => (avg ? `to par · avg ${num((s.score * 18) / s.holes)} strokes` : `${s.holes} holes`) },
-  pctStat('birdie', 'Birdie or better', 'Birdie', 'high', s => s.birdies, s => s.holes, s => `${s.birdies} of ${s.holes} holes`),
-  pctStat('bogey', 'Bogey or worse', 'Bogey+', 'low', s => s.bogeys, s => s.holes, s => `${s.bogeys} of ${s.holes} holes`),
-  pctStat('fw', 'Fairways hit', 'FW hit', 'high', s => s.fwHit, s => s.fwN, s => `${s.fwHit} of ${s.fwN}`),
-  pctStat('fwL', 'Missed left', 'Miss L', 'low', s => s.fwL, s => s.fwN, s => `${s.fwL} of ${s.fwN} fairways`),
-  pctStat('fwR', 'Missed right', 'Miss R', 'low', s => s.fwR, s => s.fwN, s => `${s.fwR} of ${s.fwN} fairways`),
-  { key: 'dirt', label: 'Drives into recovery (DIRT)', short: 'DIRT', better: 'low', per18: true,
-    val: s => (s.dirtN ? s.dirt : null), fmt: v => num(v), tick: v => num(v),
-    sub: s => `${pct(s.dirt, s.dirtN)} of tee shots` },
-  pctStat('gir', 'Greens in reg', 'GIR', 'high', s => s.gir, s => s.girN, s => `${s.gir} of ${s.girN}`),
-  pctStat('gir1', 'GIR + 1', 'GIR+1', 'high', s => s.gir1, s => s.gir1N, s => `${s.gir1} of ${s.gir1N}`),
+  pctStat('birdie', 'Birdie or better', 'Birdie', 'high', s => [s.birdies, s.holes], 'holes'),
+  pctStat('bogey', 'Bogey or worse', 'Bogey+', 'low', s => [s.bogeys, s.holes], 'holes'),
+  pctStat('fw', 'Fairways hit', 'FW hit', 'high', s => [s.fwHit, s.fwN], 'fairways'),
+  pctStat('fwL', 'Missed left', 'Miss L', 'low', s => [s.fwL, s.fwN], 'fairways'),
+  pctStat('fwR', 'Missed right', 'Miss R', 'low', s => [s.fwR, s.fwN], 'fairways'),
+  countStat('dirt', 'Drives into recovery (DIRT)', 'DIRT', s => [s.dirt, s.dirtN], 'tee shots'),
+  pctStat('gir', 'Greens in reg', 'GIR', 'high', s => [s.gir, s.girN], 'greens'),
+  pctStat('gir1', 'GIR + 1', 'GIR+1', 'high', s => [s.gir1, s.gir1N], 'holes'),
   { key: 'putts', label: 'Putts', short: 'Putts', better: 'low', per18: true, n: s => s.puttsN,
     val: s => (s.puttsN ? s.putts : null), fmt: v => num(v), tick: v => num(v),
     sub: s => `${num(s.putts / s.puttsN, 2)} per hole` },
   { key: 'puttsGir', label: 'Putts per GIR', short: 'Putts/GIR', better: 'low',
     val: s => (s.girPuttsN ? s.girPutts / s.girPuttsN : null), fmt: v => num(v, 2), tick: v => num(v, 2),
     sub: s => `${s.girPuttsN} greens hit` },
-  { key: 'threePutt', label: '3-putts', short: '3-putts', better: 'low', per18: true, n: s => s.puttsN,
-    val: s => (s.puttsN ? s.threePutts : null), fmt: v => num(v), tick: v => num(v),
-    sub: s => `${pct(s.threePutts, s.puttsN)} of holes` },
+  countStat('threePutt', '3-putts', '3-putts', s => [s.threePutts, s.puttsN], 'holes', s => s.puttsN),
   { key: 'firstPutt', label: '1st putt distance', short: '1st putt', better: 'low',
     val: s => (s.fpN ? s.fp / s.fpN : null), fmt: fmtPutt, tick: v => num(db.units === 'm' ? v / FT_PER_M : v),
     sub: s => `avg of ${s.fpN} hole${s.fpN === 1 ? '' : 's'}` },
-  { key: 'shortBog', label: 'Bogeys from inside 150', short: '<150 bogey', better: 'low', per18: true,
-    val: s => (s.holes ? s.shortBog : null), fmt: v => num(v), tick: v => num(v),
-    sub: s => `${s.shortBog} of ${s.insideN} approaches inside 150 (no DIRT)` },
-  pctStat('p5', 'Par 5 bogeys', 'P5 bogey', 'low', s => s.p5Bog, s => s.p5N, s => `${s.p5Bog} of ${s.p5N} par 5s`),
-  { key: 'short', label: 'Short-sided', short: 'Short-sided', better: 'low', per18: true,
-    val: s => (s.holes ? s.shortSide : null), fmt: v => num(v), tick: v => num(v),
-    sub: s => `${s.shortSide} of ${s.missN} missed green${s.missN === 1 ? '' : 's'}` },
+  countStat('shortBog', 'Bogeys from inside 150', '<150 bogey', s => [s.shortBog, s.insideN], 'approaches inside 150 (no DIRT)'),
+  pctStat('p5', 'Par 5 bogeys', 'P5 bogey', 'low', s => [s.p5Bog, s.p5N], 'par 5s'),
+  countStat('short', 'Short-sided', 'Short-sided', s => [s.shortSide, s.missN], 'missed greens'),
   { key: 'pen', label: 'Penalties', short: 'Pens', better: 'low', per18: true,
     val: s => (s.holes ? s.pen : null), fmt: v => num(v), tick: v => num(v) },
 ];
@@ -667,9 +667,25 @@ function statRate(st, s) {
   const n = st.n ? st.n(s) : s.holes;
   return n ? (v * 18) / n : null;
 }
-const roundVal = (st, s) => {
+// Small print under a value: the count and what it's out of, plus the percentage
+// when the value shown isn't already the percentage
+function statSub(st, s, avg) {
+  if (!st.of) return st.sub?.(s, avg) || '';
+  const [a, b] = st.of(s);
+  if (!b) return `no ${st.noun}`;
+  return `${a} of ${b} ${st.noun}${st.per18 ? ` · ${pct(a, b)}` : ''}`;
+}
+// One round's value in its big form (tiles, lists)
+const roundBig = (st, s) => {
   const v = st.val(s);
-  return v == null ? '–' : st.cell ? st.cell(s) : st.per18 ? String(v) : st.fmt(v);
+  return v == null ? '–' : st.cell ? st.cell(s) : st.fmt(v);
+};
+// One round's value in a table cell: number and percentage together
+const roundVal = (st, s) => {
+  if (st.val(s) == null) return '–';
+  if (!st.of) return roundBig(st, s);
+  const [a, b] = st.of(s);
+  return b ? `${a}/${b} (${pct(a, b)})` : String(a);
 };
 const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
 
@@ -685,8 +701,8 @@ const rangeSeg = () => `<div class="seg four">
 function tiles(s, avg) {
   return `<div class="tiles">${STATS.map(st => {
     const v = avg ? statRate(st, s) : st.val(s);
-    const big = v == null ? '–' : avg ? st.fmt(v) : roundVal(st, s);
-    const sub = v == null ? '' : st.sub?.(s, avg) || '';
+    const big = v == null ? '–' : avg ? st.fmt(v) : roundBig(st, s);
+    const sub = v == null ? '' : statSub(st, s, avg);
     const inner = `<span class="tl">${st.label}${avg && st.per18 ? ' / 18' : ''}</span><strong>${big}</strong>${sub ? `<small>${sub}</small>` : ''}`;
     return avg
       ? `<button class="tile tap" data-a="trend" data-v="${st.key}">${inner}<span class="more">Trend ›</span></button>`
@@ -1079,6 +1095,7 @@ const views = {
           <p class="muted">${rounds.length} round${rounds.length === 1 ? '' : 's'} · ${s.holes} holes · tap a stat for its trend</p>
           ${tiles(s, true)}
           <h2>Round by round</h2>
+          <p class="muted small">Tap a round to see its scorecard${pid === db.playerId ? ', edit it or delete it' : ''}.</p>
           ${roundTable(rounds)}`
           : `<p class="muted">${pid === db.playerId ? 'Finish a round to see your stats here.' : 'No finished rounds yet.'}</p>`}
         ${open.length ? section('In progress', open.map(r => row('openRound', r.id, r.course, `${fmtDate(r.date)} · ${r.tee}`, thru(r))).join('')) : ''}
@@ -1106,7 +1123,7 @@ const views = {
         </div>
         ${pts.length >= 2 ? chart(st, pts) : '<p class="muted">Finish at least 2 rounds that record this stat to see a trend.</p>'}
         ${pts.length ? section('Each round', pts.slice().reverse().map(p =>
-          row('openRound', p.r.id, p.r.course, [fmtDate(p.r.date), st.sub?.(p.s, false)].filter(Boolean).join(' · '), `<b>${roundVal(st, p.s)}</b>`)).join('')) : ''}
+          row('openRound', p.r.id, p.r.course, [fmtDate(p.r.date), statSub(st, p.s, false)].filter(Boolean).join(' · '), `<b>${roundBig(st, p.s)}</b>`)).join('')) : ''}
       </main>`;
   },
 
@@ -1133,7 +1150,7 @@ const views = {
             <span class="rank ${rank(i) === 1 ? 'first' : ''}">${rank(i)}</span>
             <span class="row-main">
               <strong>${esc(x.p.name)}${x.p.id === db.playerId ? ' <span class="you">you</span>' : ''}</strong>
-              <small>${[`${x.n} round${x.n === 1 ? '' : 's'}`, st.sub?.(x.s, true)].filter(Boolean).join(' · ')}</small>
+              <small>${[`${x.n} round${x.n === 1 ? '' : 's'}`, statSub(st, x.s, true)].filter(Boolean).join(' · ')}</small>
             </span>
             <span class="row-right"><b>${st.fmt(x.v)}</b></span>
           </button>`).join('')}</div>`
@@ -1467,6 +1484,9 @@ document.addEventListener('submit', e => {
 document.addEventListener('change', e => changes[e.target.dataset.c]?.(e.target));
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  // A new version takes over once it has downloaded: reload so it shows straight away
+  // (the round in progress is already saved on the phone)
+  if (navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
