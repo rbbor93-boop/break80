@@ -1,6 +1,6 @@
 // Caches the app shell so it opens with no signal on the course.
 // Bump VERSION when shipping changes.
-const VERSION = 'break80-v5';
+const VERSION = 'break80-v6';
 const ASSETS = ['./', 'index.html', 'config.js', 'app.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

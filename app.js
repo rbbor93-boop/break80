@@ -279,6 +279,7 @@ function calc(holes) {
     holes: p.length,
     score: sum(p, h => h.score),
     par: sum(p, h => h.par),
+    birdies: cnt(p, h => h.score < h.par), bogeys: cnt(p, h => h.score > h.par),
     fwN: fw.length, fwHit: cnt(fw, h => h.fairway === 'hit'), fwL: cnt(fw, h => h.fairway === 'left'), fwR: cnt(fw, h => h.fairway === 'right'),
     girN: g.length, gir: cnt(g, h => D.gir(h)),
     gir1N: g1.length, gir1: cnt(g1, h => D.gir1(h)),
@@ -623,6 +624,8 @@ const STATS = [
     fmt: v => toParStr(+v.toFixed(1)), tick: v => toParStr(+v.toFixed(1)),
     cell: s => `${s.score} (${toParStr(s.score - s.par)})`,
     sub: (s, avg) => (avg ? `to par · avg ${num((s.score * 18) / s.holes)} strokes` : `${s.holes} holes`) },
+  pctStat('birdie', 'Birdie or better', 'Birdie', 'high', s => s.birdies, s => s.holes, s => `${s.birdies} of ${s.holes} holes`),
+  pctStat('bogey', 'Bogey or worse', 'Bogey+', 'low', s => s.bogeys, s => s.holes, s => `${s.bogeys} of ${s.holes} holes`),
   pctStat('fw', 'Fairways hit', 'FW hit', 'high', s => s.fwHit, s => s.fwN, s => `${s.fwHit} of ${s.fwN}`),
   pctStat('fwL', 'Missed left', 'Miss L', 'low', s => s.fwL, s => s.fwN, s => `${s.fwL} of ${s.fwN} fairways`),
   pctStat('fwR', 'Missed right', 'Miss R', 'low', s => s.fwR, s => s.fwN, s => `${s.fwR} of ${s.fwN} fairways`),
@@ -653,6 +656,9 @@ const STATS = [
   { key: 'pen', label: 'Penalties', short: 'Pens', better: 'low', per18: true,
     val: s => (s.holes ? s.pen : null), fmt: v => num(v), tick: v => num(v) },
 ];
+
+// The stats players are ranked on
+const BOARD_STATS = ['score', 'fw', 'gir', 'gir1', 'putts', 'birdie', 'bogey'].map(k => STATS.find(st => st.key === k));
 
 // Comparable value: per-18 rate for counts, as-is for percentages/averages
 function statRate(st, s) {
@@ -1105,7 +1111,7 @@ const views = {
   },
 
   board() {
-    const st = STATS.find(x => x.key === ui.boardStat) || STATS[0];
+    const st = BOARD_STATS.find(x => x.key === ui.boardStat) || BOARD_STATS[0];
     const over = ui.statsN === 'all' ? 'all their rounds' : `their last ${ui.statsN} rounds`;
     const rows = db.players.map(p => {
       const rs = selectedRounds(p.id);
@@ -1116,7 +1122,7 @@ const views = {
     const rank = i => rows.findIndex(x => st.fmt(x.v) === st.fmt(rows[i].v)) + 1;
     const feed = db.rounds.filter(r => r.done).slice(0, 15);
     return `${bar('Leaderboard', 'home')}
-      <nav class="stat-strip">${STATS.map(x =>
+      <nav class="stat-strip">${BOARD_STATS.map(x =>
         `<button class="mini ${x.key === st.key ? 'on cur' : ''}" data-a="boardStat" data-v="${x.key}">${x.short}</button>`).join('')}
       </nav>
       <main class="stack">
