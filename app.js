@@ -272,7 +272,6 @@ function calc(holes) {
   const girPt = pt.filter(h => D.gir(h) === true);
   const fp = p.filter(h => h.firstPutt != null);
   const p5 = p.filter(h => h.par === 5);
-  const p3 = p.filter(h => h.par === 3);
   const tee = p.filter(h => h.par >= 4);
   const inside = p.filter(h => D.approach(h) != null && D.approach(h) < SHORT_APPROACH_YD && !h.dirt);
 
@@ -289,7 +288,7 @@ function calc(holes) {
     dirtN: tee.length, dirt: cnt(tee, h => h.dirt),
     insideN: inside.length, shortBog: cnt(inside, h => h.score > h.par),
     p5N: p5.length, p5Bog: cnt(p5, h => h.score > h.par),
-    p3N: p3.length, shortSide: cnt(p3, h => h.shortSide),
+    shortSide: cnt(p, h => h.shortSide), missN: cnt(g, h => !D.gir(h)),
     pen: sum(p, h => h.penalties),
   };
 }
@@ -648,7 +647,9 @@ const STATS = [
     val: s => (s.holes ? s.shortBog : null), fmt: v => num(v), tick: v => num(v),
     sub: s => `${s.shortBog} of ${s.insideN} approaches inside 150 (no DIRT)` },
   pctStat('p5', 'Par 5 bogeys', 'P5 bogey', 'low', s => s.p5Bog, s => s.p5N, s => `${s.p5Bog} of ${s.p5N} par 5s`),
-  pctStat('short', 'Par 3 short-sided', 'P3 short', 'low', s => s.shortSide, s => s.p3N, s => `${s.shortSide} of ${s.p3N} par 3s`),
+  { key: 'short', label: 'Short-sided', short: 'Short-sided', better: 'low', per18: true,
+    val: s => (s.holes ? s.shortSide : null), fmt: v => num(v), tick: v => num(v),
+    sub: s => `${s.shortSide} of ${s.missN} missed green${s.missN === 1 ? '' : 's'}` },
   { key: 'pen', label: 'Penalties', short: 'Pens', better: 'low', per18: true,
     val: s => (s.holes ? s.pen : null), fmt: v => num(v), tick: v => num(v) },
 ];
@@ -1030,7 +1031,7 @@ const views = {
 
         ${stepper('Penalties', 'pen', h.penalties, 0)}
 
-        ${h.par === 3 ? toggle('short', 'Short-sided (par 3)', h.shortSide) : ''}
+        ${toggle('short', 'Short-sided<small>Missed the green on the pin side, little green to work with</small>', h.shortSide)}
 
         ${autos(h)}
       </main>
@@ -1234,14 +1235,14 @@ function download(name, text, type) {
 
 function toCsv() {
   const cols = ['player', 'date', 'course', 'tee', 'hole', 'par', 'yards', 'hcp', 'score', 'to_par', 'putts', 'first_putt_ft', 'fairway',
-    'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'par5_bogey', 'par3_short_side'];
+    'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'par5_bogey', 'short_sided'];
   const b = v => (v == null ? '' : v ? 1 : 0);
   const q = v => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v);
   const rows = db.rounds.flatMap(r => r.holes.filter(h => h.score != null).map(h => [
     playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, h.n, h.par, showLen(h.yardage, 'yd'), h.hcp, h.score, h.score - h.par, h.putts, showPutt(h.firstPutt, 'yd'),
     h.par >= 4 ? h.fairway : '', h.par >= 4 ? b(h.dirt) : '', showLen(D.approach(h), 'yd'),
     b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(D.shortBogey(h)),
-    h.par === 5 ? b(D.par5Bogey(h)) : '', h.par === 3 ? b(h.shortSide) : '',
+    h.par === 5 ? b(D.par5Bogey(h)) : '', b(h.shortSide),
   ]));
   return [cols, ...rows].map(r => r.map(q).join(',')).join('\n');
 }
