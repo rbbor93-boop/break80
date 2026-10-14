@@ -27,6 +27,7 @@ const defaults = () => ({
   dirty: {},         // roundId → edit version not yet on the server
   deletes: [],       // [{ id, playerId }] waiting to be deleted on the server
   courseQueue: [],   // courses not yet on the server
+  units: 'yd',       // 'yd' | 'm' — last choice, the default for the next round
   lastSync: null,
 });
 let db = (() => {
@@ -203,6 +204,20 @@ const toParStr = d => (d === 0 ? 'E' : d > 0 ? '+' + d : String(d));
 const yn = v => (v == null ? '–' : v ? 'Yes' : 'No');
 const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 
+// Distances are stored in yards (holes, approaches) and feet (putts); each round
+// shows them in the units picked when it started.
+const YD_PER_M = 1.09361, FT_PER_M = 3.28084;
+const SHORT_APPROACH_YD = 150;
+const unitOf = r => (r?.units === 'm' ? 'm' : 'yd');
+const lenLabel = u => (u === 'm' ? 'm' : 'yds');
+const showLen = (yd, u) => (yd == null ? null : Math.round(u === 'm' ? yd / YD_PER_M : yd));
+const toYd = (v, u) => (u === 'm' ? v * YD_PER_M : v);
+const showPutt = (ft, u) => (ft == null ? null : u === 'm' ? Math.round((ft / FT_PER_M) * 10) / 10 : Math.round(ft));
+const toFt = (v, u) => (u === 'm' ? v * FT_PER_M : v);
+const fmtPutt = ft => (db.units === 'm' ? `${num(ft / FT_PER_M)} m` : `${num(ft)} ft`);
+const PUTT_CHIPS = { yd: [3, 5, 8, 10, 15, 20, 30, 40, 60], m: [1, 1.5, 2, 3, 4, 5, 7, 10, 15] };
+const APPROACH_CHIPS = { yd: [50, 75, 100, 125, 150, 175, 200, 225], m: [50, 75, 100, 125, 150, 175, 200] };
+
 function miles(a, b) {
   const R = 3958.8, rad = x => (x * Math.PI) / 180;
   const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
@@ -236,6 +251,13 @@ const D = {
   },
   threePutt: h => (h.putts == null ? null : h.putts >= 3),
   par5Bogey: h => (h.par !== 5 || h.score == null ? null : h.score > h.par),
+  // A par 3 tee shot is the approach: use the hole length unless one was entered
+  approach: h => h.approach ?? (h.par === 3 ? h.yardage ?? null : null),
+  // Bogey or worse after an approach from inside 150 yards that didn't follow a DIRT drive
+  shortBogey: h => {
+    const a = D.approach(h);
+    return h.score == null || a == null ? null : !h.dirt && a < SHORT_APPROACH_YD && h.score > h.par;
+  },
 };
 
 function calc(holes) {
@@ -251,6 +273,8 @@ function calc(holes) {
   const fp = p.filter(h => h.firstPutt != null);
   const p5 = p.filter(h => h.par === 5);
   const p3 = p.filter(h => h.par === 3);
+  const tee = p.filter(h => h.par >= 4);
+  const inside = p.filter(h => D.approach(h) != null && D.approach(h) < SHORT_APPROACH_YD && !h.dirt);
 
   return {
     holes: p.length,
@@ -262,7 +286,8 @@ function calc(holes) {
     puttsN: pt.length, putts: sum(pt, h => h.putts), threePutts: cnt(pt, h => h.putts >= 3),
     girPuttsN: girPt.length, girPutts: sum(girPt, h => h.putts),
     fpN: fp.length, fp: sum(fp, h => h.firstPutt),
-    wedge: cnt(p, h => h.wedgeBogey),
+    dirtN: tee.length, dirt: cnt(tee, h => h.dirt),
+    insideN: inside.length, shortBog: cnt(inside, h => h.score > h.par),
     p5N: p5.length, p5Bog: cnt(p5, h => h.score > h.par),
     p3N: p3.length, shortSide: cnt(p3, h => h.shortSide),
     pen: sum(p, h => h.penalties),
@@ -312,19 +337,23 @@ function startRound(course, teeIdx) {
     tee: t.name,
     rating: t.rating ?? null,
     slope: t.slope ?? null,
+    units: ui.units || 'yd',
     holes: holes.map(h => ({
       n: h.n, par: h.par, yardage: h.yardage ?? null, hcp: h.hcp ?? null,
       score: null, putts: null, firstPutt: null, fairway: null, girOverride: null,
-      penalties: 0, wedgeBogey: false, shortSide: false,
+      dirt: false, approach: null, penalties: 0, shortSide: false,
     })),
     done: false,
   };
   db.rounds.unshift(r);
   db.active[db.playerId] = r.id;
+  db.units = ui.units || 'yd';
   upsertCourse(course);
   touch(r);
   go('hole', { roundId: r.id, hole: 0 });
 }
+
+const openTees = course => go('tees', { course, span: 'all', units: course.units || db.units || 'yd' });
 
 function deleteRound(r) {
   db.rounds = db.rounds.filter(x => x !== r);
@@ -513,7 +542,7 @@ async function openCourse(summary) {
   try {
     const course = await loadCourse(summary);
     f.status = 'idle';
-    if (ui.view === 'find') go('tees', { course, span: 'all' });
+    if (ui.view === 'find') openTees(course);
   } catch (e) {
     Object.assign(f, { status: 'idle', error: e.message });
     renderFind();
@@ -557,10 +586,20 @@ const toggle = (action, label, on, disabled = false) => `
     <span>${label}</span><span class="sw" aria-hidden="true"></span>
   </button>`;
 
-function teeInfo(t) {
-  const yards = t.yards || t.holes.reduce((a, h) => a + (h.yardage || 0), 0);
+function autos(h) {
+  const g1 = D.gir1(h), tp = D.threePutt(h), p5 = D.par5Bogey(h), sb = D.shortBogey(h);
+  return `<div class="autos">
+    <span class="pill ${g1 ? 'good' : ''}">GIR+1: ${yn(g1)}</span>
+    <span class="pill ${tp ? 'bad' : ''}">3-putt: ${yn(tp)}</span>
+    <span class="pill ${sb ? 'bad' : ''}">Bogey inside 150: ${yn(sb)}</span>
+    ${h.par === 5 ? `<span class="pill ${p5 ? 'bad' : ''}">Par 5 bogey: ${yn(p5)}</span>` : ''}
+  </div>`;
+}
+
+function teeInfo(t, u) {
+  const yards = showLen(t.yards || t.holes.reduce((a, h) => a + (h.yardage || 0), 0), u);
   const par = t.par || t.holes.reduce((a, h) => a + h.par, 0);
-  return [yards ? `${yards.toLocaleString()} yds` : null, `Par ${par}`, `${t.holes.length} holes`, t.rating && t.slope ? `${t.rating} / ${t.slope}` : null]
+  return [yards ? `${yards.toLocaleString()} ${lenLabel(u)}` : null, `Par ${par}`, `${t.holes.length} holes`, t.rating && t.slope ? `${t.rating} / ${t.slope}` : null]
     .filter(Boolean)
     .join(' · ');
 }
@@ -588,6 +627,9 @@ const STATS = [
   pctStat('fw', 'Fairways hit', 'FW hit', 'high', s => s.fwHit, s => s.fwN, s => `${s.fwHit} of ${s.fwN}`),
   pctStat('fwL', 'Missed left', 'Miss L', 'low', s => s.fwL, s => s.fwN, s => `${s.fwL} of ${s.fwN} fairways`),
   pctStat('fwR', 'Missed right', 'Miss R', 'low', s => s.fwR, s => s.fwN, s => `${s.fwR} of ${s.fwN} fairways`),
+  { key: 'dirt', label: 'Drives into recovery (DIRT)', short: 'DIRT', better: 'low', per18: true,
+    val: s => (s.dirtN ? s.dirt : null), fmt: v => num(v), tick: v => num(v),
+    sub: s => `${pct(s.dirt, s.dirtN)} of tee shots` },
   pctStat('gir', 'Greens in reg', 'GIR', 'high', s => s.gir, s => s.girN, s => `${s.gir} of ${s.girN}`),
   pctStat('gir1', 'GIR + 1', 'GIR+1', 'high', s => s.gir1, s => s.gir1N, s => `${s.gir1} of ${s.gir1N}`),
   { key: 'putts', label: 'Putts', short: 'Putts', better: 'low', per18: true, n: s => s.puttsN,
@@ -600,10 +642,11 @@ const STATS = [
     val: s => (s.puttsN ? s.threePutts : null), fmt: v => num(v), tick: v => num(v),
     sub: s => `${pct(s.threePutts, s.puttsN)} of holes` },
   { key: 'firstPutt', label: '1st putt distance', short: '1st putt', better: 'low',
-    val: s => (s.fpN ? s.fp / s.fpN : null), fmt: v => `${num(v)} ft`, tick: v => num(v),
-    sub: s => `avg of ${s.fpN} holes` },
-  { key: 'wedge', label: 'Bogeys with a wedge', short: 'Wedge bog', better: 'low', per18: true,
-    val: s => (s.holes ? s.wedge : null), fmt: v => num(v), tick: v => num(v) },
+    val: s => (s.fpN ? s.fp / s.fpN : null), fmt: fmtPutt, tick: v => num(db.units === 'm' ? v / FT_PER_M : v),
+    sub: s => `avg of ${s.fpN} hole${s.fpN === 1 ? '' : 's'}` },
+  { key: 'shortBog', label: 'Bogeys from inside 150', short: '<150 bogey', better: 'low', per18: true,
+    val: s => (s.holes ? s.shortBog : null), fmt: v => num(v), tick: v => num(v),
+    sub: s => `${s.shortBog} of ${s.insideN} approaches inside 150 (no DIRT)` },
   pctStat('p5', 'Par 5 bogeys', 'P5 bogey', 'low', s => s.p5Bog, s => s.p5N, s => `${s.p5Bog} of ${s.p5N} par 5s`),
   pctStat('short', 'Par 3 short-sided', 'P3 short', 'low', s => s.shortSide, s => s.p3N, s => `${s.shortSide} of ${s.p3N} par 3s`),
   { key: 'pen', label: 'Penalties', short: 'Pens', better: 'low', per18: true,
@@ -738,6 +781,7 @@ document.addEventListener('pointerdown', chartPointer);
 document.addEventListener('pointermove', chartPointer);
 
 function scorecard(r, editable = true) {
+  const u = unitOf(r);
   const chunks = [];
   for (let i = 0; i < r.holes.length; i += 9) chunks.push(r.holes.slice(i, i + 9));
   const fwMark = h => (h.par < 4 ? '' : { hit: '✓', left: '←', right: '→' }[h.fairway] || '');
@@ -748,7 +792,7 @@ function scorecard(r, editable = true) {
     const offset = r.holes.indexOf(hs[0]);
     return `<div class="sc-wrap"><table class="sc">
       <tr class="hd"><th>Hole</th>${hs.map((h, j) => `<th>${editable ? `<button class="link" data-a="hole" data-v="${offset + j}">${h.n}</button>` : h.n}</th>`).join('')}<th>${label}</th></tr>
-      <tr class="muted"><th>Yds</th>${hs.map(h => `<td>${h.yardage ?? ''}</td>`).join('')}<td>${tot(hs, h => h.yardage)}</td></tr>
+      <tr class="muted"><th>${u === 'm' ? 'm' : 'Yds'}</th>${hs.map(h => `<td>${showLen(h.yardage, u) ?? ''}</td>`).join('')}<td>${tot(hs, h => showLen(h.yardage, u))}</td></tr>
       <tr><th>Par</th>${hs.map(h => `<td>${h.par}</td>`).join('')}<td>${tot(hs, h => h.par)}</td></tr>
       <tr class="score"><th>Score</th>${hs.map(h => `<td><span class="sd ${diffClass(h)}">${h.score ?? ''}</span></td>`).join('')}<td><b>${tot(hs, h => h.score)}</b></td></tr>
       <tr><th>Putts</th>${hs.map(h => `<td>${h.putts ?? ''}</td>`).join('')}<td>${tot(hs, h => h.putts)}</td></tr>
@@ -879,7 +923,14 @@ const views = {
             ${segBtn('span', 'front', 'Front 9', ui.span === 'front')}
             ${segBtn('span', 'back', 'Back 9', ui.span === 'back')}
           </div>` : ''}
-        ${section('Select tees', c.tees.map((t, i) => row('tee', i, t.name, teeInfo(t))).join(''))}
+        <div class="field col">
+          <div class="lbl">Distances in</div>
+          <div class="seg">
+            ${segBtn('units', 'yd', 'Yards', ui.units === 'yd')}
+            ${segBtn('units', 'm', 'Metres', ui.units === 'm')}
+          </div>
+        </div>
+        ${section('Select tees', c.tees.map((t, i) => row('tee', i, t.name, teeInfo(t, ui.units))).join(''))}
       </main>`;
   },
 
@@ -893,8 +944,12 @@ const views = {
           ${segBtn('manN', 9, '9 holes', m.holes.length === 9)}
           ${segBtn('manN', 18, '18 holes', m.holes.length === 18)}
         </div>
+        <div class="seg">
+          ${segBtn('manUnits', 'yd', 'Card in yards', m.units === 'yd')}
+          ${segBtn('manUnits', 'm', 'Card in metres', m.units === 'm')}
+        </div>
         <table class="grid">
-          <thead><tr><th>Hole</th><th>Par</th><th>Yards</th><th>HCP</th></tr></thead>
+          <thead><tr><th>Hole</th><th>Par</th><th>${m.units === 'm' ? 'Metres' : 'Yards'}</th><th>HCP</th></tr></thead>
           <tbody>${m.holes.map((h, i) => `
             <tr>
               <td>${i + 1}</td>
@@ -911,7 +966,7 @@ const views = {
   hole() {
     const r = curRound(), i = ui.hole, h = r.holes[i];
     const last = i === r.holes.length - 1;
-    const g = D.gir(h), g1 = D.gir1(h), tp = D.threePutt(h), p5 = D.par5Bogey(h);
+    const g = D.gir(h), u = unitOf(r);
     const girAuto = h.girOverride == null && g != null;
     return `
       <div class="sticky">
@@ -927,7 +982,7 @@ const views = {
       <main class="hole">
         <div class="hole-head">
           <div class="num">Hole ${h.n}</div>
-          <div class="meta"><span>Par ${h.par}</span>${h.yardage ? `<span>${h.yardage} yds</span>` : ''}${h.hcp ? `<span>HCP ${h.hcp}</span>` : ''}</div>
+          <div class="meta"><span>Par ${h.par}</span>${h.yardage ? `<span>${showLen(h.yardage, u)} ${lenLabel(u)}</span>` : ''}${h.hcp ? `<span>HCP ${h.hcp}</span>` : ''}</div>
         </div>
         <div class="hole-sync">${syncBadge()}</div>
 
@@ -936,11 +991,11 @@ const views = {
 
         ${h.putts !== 0 ? `
         <div class="field col">
-          <div class="lbl">First putt <small>feet</small></div>
+          <div class="lbl">First putt <small>${u === 'm' ? 'metres' : 'feet'}</small></div>
           <div class="fp">
-            <input type="number" inputmode="decimal" min="0" step="1" placeholder="ft" data-c="fp" value="${h.firstPutt ?? ''}">
-            <div class="quick">${[3, 5, 8, 10, 15, 20, 30, 40, 60].map(d =>
-              `<button class="mini ${h.firstPutt === d ? 'on' : ''}" data-a="fp" data-v="${d}">${d}</button>`).join('')}</div>
+            <input type="number" inputmode="decimal" min="0" step="any" placeholder="${u === 'm' ? 'm' : 'ft'}" data-c="fp" value="${showPutt(h.firstPutt, u) ?? ''}">
+            <div class="quick">${PUTT_CHIPS[u].map(d =>
+              `<button class="mini ${showPutt(h.firstPutt, u) === d ? 'on' : ''}" data-a="fp" data-v="${d}">${d}</button>`).join('')}</div>
           </div>
         </div>` : ''}
 
@@ -952,7 +1007,18 @@ const views = {
             ${segBtn('fw', 'hit', 'Hit', h.fairway === 'hit', 'hit')}
             ${segBtn('fw', 'right', 'Right →', h.fairway === 'right', 'miss')}
           </div>
-        </div>` : ''}
+        </div>
+        ${toggle('dirt', 'Drive into recovery territory (DIRT)<small>No clear shot at the green after the tee shot</small>', h.dirt)}` : ''}
+
+        <div class="field col">
+          <div class="lbl">Approach distance <small>${h.par === 3 ? `${lenLabel(u)} · the tee shot; blank uses the hole length` : `${lenLabel(u)} · your shot into the green`}</small></div>
+          <div class="fp">
+            <input type="number" inputmode="numeric" min="0" data-c="ap" value="${showLen(h.approach, u) ?? ''}"
+              placeholder="${h.par === 3 && h.yardage ? showLen(h.yardage, u) : lenLabel(u)}">
+            <div class="quick">${APPROACH_CHIPS[u].map(d =>
+              `<button class="mini ${showLen(h.approach, u) === d ? 'on' : ''}" data-a="ap" data-v="${d}">${d}</button>`).join('')}</div>
+          </div>
+        </div>
 
         <div class="field col">
           <div class="lbl">Green in regulation ${girAuto ? '<small>auto from score &amp; putts</small>' : ''}</div>
@@ -964,14 +1030,9 @@ const views = {
 
         ${stepper('Penalties', 'pen', h.penalties, 0)}
 
-        ${toggle('wedge', 'Bogey or worse with a wedge in hand', h.wedgeBogey, h.score != null && h.score <= h.par)}
         ${h.par === 3 ? toggle('short', 'Short-sided (par 3)', h.shortSide) : ''}
 
-        <div class="autos">
-          <span class="pill ${g1 ? 'good' : ''}">GIR+1: ${yn(g1)}</span>
-          <span class="pill ${tp ? 'bad' : ''}">3-putt: ${yn(tp)}</span>
-          ${h.par === 5 ? `<span class="pill ${p5 ? 'bad' : ''}">Par 5 bogey: ${yn(p5)}</span>` : ''}
-        </div>
+        ${autos(h)}
       </main>
       <footer class="nav">
         <button class="btn" data-a="prev" ${i === 0 ? 'disabled' : ''}>‹ Prev</button>
@@ -1043,31 +1104,36 @@ const views = {
   },
 
   board() {
-    const label = ui.statsN === 'all' ? 'all their rounds' : `their last ${ui.statsN} rounds`;
+    const st = STATS.find(x => x.key === ui.boardStat) || STATS[0];
+    const over = ui.statsN === 'all' ? 'all their rounds' : `their last ${ui.statsN} rounds`;
     const rows = db.players.map(p => {
       const rs = selectedRounds(p.id);
       const s = calc(rs.flatMap(r => r.holes));
-      const full = rs.map(r => calc(r.holes)).filter(x => x.holes === 18);
-      return { p, n: rs.length, s, toPar: s.holes ? ((s.score - s.par) * 18) / s.holes : null, best: full.length ? Math.min(...full.map(x => x.score)) : null };
-    }).filter(x => x.n).sort((a, b) => a.toPar - b.toPar);
+      return { p, n: rs.length, s, v: rs.length ? statRate(st, s) : null };
+    }).filter(x => x.v != null).sort((a, b) => (st.better === 'low' ? a.v - b.v : b.v - a.v));
+    // Equal (as displayed) values share a rank
+    const rank = i => rows.findIndex(x => st.fmt(x.v) === st.fmt(rows[i].v)) + 1;
     const feed = db.rounds.filter(r => r.done).slice(0, 15);
     return `${bar('Leaderboard', 'home')}
+      <nav class="stat-strip">${STATS.map(x =>
+        `<button class="mini ${x.key === st.key ? 'on cur' : ''}" data-a="boardStat" data-v="${x.key}">${x.short}</button>`).join('')}
+      </nav>
       <main class="stack">
         ${rangeSeg()}
-        <p class="muted small">Ranked by average score to par per 18 holes over ${label}. Tap a player for their stats.</p>
+        <p class="muted small">${esc(st.label)}${st.per18 ? ' per 18 holes' : ''} over ${over}. ${st.better === 'low' ? 'Lower' : 'Higher'} is better. Tap a player for their stats.</p>
         ${rows.length ? `<div class="list">${rows.map((x, i) => `
           <button class="row" data-a="playerStats" data-v="${x.p.id}">
-            <span class="rank ${i === 0 ? 'first' : ''}">${i + 1}</span>
+            <span class="rank ${rank(i) === 1 ? 'first' : ''}">${rank(i)}</span>
             <span class="row-main">
               <strong>${esc(x.p.name)}${x.p.id === db.playerId ? ' <span class="you">you</span>' : ''}</strong>
-              <small>${x.n} round${x.n === 1 ? '' : 's'} · best ${x.best ?? '–'} · GIR ${pct(x.s.gir, x.s.girN)} · ${x.s.puttsN ? num((x.s.putts * 18) / x.s.puttsN) : '–'} putts</small>
+              <small>${[`${x.n} round${x.n === 1 ? '' : 's'}`, st.sub?.(x.s, true)].filter(Boolean).join(' · ')}</small>
             </span>
-            <span class="row-right"><b>${toParStr(+x.toPar.toFixed(1))}</b></span>
+            <span class="row-right"><b>${st.fmt(x.v)}</b></span>
           </button>`).join('')}</div>`
-          : '<p class="muted">No finished rounds yet. Be the first!</p>'}
+          : `<p class="muted">${db.rounds.some(r => r.done) ? 'Nobody has recorded this stat yet.' : 'No finished rounds yet. Be the first!'}</p>`}
         ${feed.length ? section('Latest rounds', feed.map(r => {
           const s = calc(r.holes);
-          return row('openRound', r.id, `${playerName(r.playerId)} · ${r.course}`, `${fmtDate(r.date)} · ${r.tee}${s.holes !== 18 ? ` · ${s.holes} holes` : ''}`,
+          return row('openRound', r.id, `${playerName(r.playerId)} · ${r.course}`, `${fmtDate(r.date)} · ${r.tee}${s.holes !== 18 ? ` · ${s.holes} hole${s.holes === 1 ? '' : 's'}` : ''}`,
             `<b>${s.score}</b>&nbsp;<small>(${toParStr(s.score - s.par)})</small>`);
         }).join('')) : ''}
       </main>`;
@@ -1168,12 +1234,13 @@ function download(name, text, type) {
 
 function toCsv() {
   const cols = ['player', 'date', 'course', 'tee', 'hole', 'par', 'yards', 'hcp', 'score', 'to_par', 'putts', 'first_putt_ft', 'fairway',
-    'gir', 'gir_plus_1', 'three_putt', 'penalties', 'wedge_bogey', 'par5_bogey', 'par3_short_side'];
+    'dirt', 'approach_yds', 'gir', 'gir_plus_1', 'three_putt', 'penalties', 'bogey_inside_150', 'par5_bogey', 'par3_short_side'];
   const b = v => (v == null ? '' : v ? 1 : 0);
   const q = v => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v);
   const rows = db.rounds.flatMap(r => r.holes.filter(h => h.score != null).map(h => [
-    playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, h.n, h.par, h.yardage, h.hcp, h.score, h.score - h.par, h.putts, h.firstPutt,
-    h.par >= 4 ? h.fairway : '', b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(h.wedgeBogey),
+    playerName(r.playerId), r.date.slice(0, 10), r.course, r.tee, h.n, h.par, showLen(h.yardage, 'yd'), h.hcp, h.score, h.score - h.par, h.putts, showPutt(h.firstPutt, 'yd'),
+    h.par >= 4 ? h.fairway : '', h.par >= 4 ? b(h.dirt) : '', showLen(D.approach(h), 'yd'),
+    b(D.gir(h)), b(D.gir1(h)), b(D.threePutt(h)), h.penalties, b(D.shortBogey(h)),
     h.par === 5 ? b(D.par5Bogey(h)) : '', h.par === 3 ? b(h.shortSide) : '',
   ]));
   return [cols, ...rows].map(r => r.map(q).join(',')).join('\n');
@@ -1194,14 +1261,16 @@ const actions = {
   locate,
   pickNearby: i => doSearch(ui.find.nearby[i].name, ui.find.nearby[i]),
   pickResult: i => openCourse(ui.find.results[i]),
-  pickSaved: id => go('tees', { course: db.courses.find(c => c.id === id), span: 'all' }),
+  pickSaved: id => openTees(db.courses.find(c => c.id === id)),
   span: v => { ui.span = v; render(); },
+  units: v => { ui.units = v; render(); },
   tee: i => startRound(ui.course, +i),
 
   manual: () => {
     const name = ui.find.query || '';
-    go('manual', { manual: { name, tee: '', holes: Array.from({ length: 18 }, () => ({ par: 4, yardage: null, hcp: null })) } });
+    go('manual', { manual: { name, tee: '', units: db.units || 'yd', holes: Array.from({ length: 18 }, () => ({ par: 4, yardage: null, hcp: null })) } });
   },
+  manUnits: v => { readManual(); ui.manual.units = v; render(); },
   manN: v => {
     readManual();
     const hs = ui.manual.holes;
@@ -1210,17 +1279,18 @@ const actions = {
   },
 
   // Hole entry
-  score: step('score', h => h.par, 1, h => { if (h.score <= h.par) h.wedgeBogey = false; }),
+  score: step('score', h => h.par, 1),
   putts: step('putts', 2, 0, h => { if (h.putts === 0) h.firstPutt = null; }),
   pen: step('penalties', 0, 0),
-  fp: v => editHole(h => { h.firstPutt = h.firstPutt === +v ? null : +v; }),
+  fp: v => editHole(h => { const u = unitOf(curRound()); h.firstPutt = showPutt(h.firstPutt, u) === +v ? null : toFt(+v, u); }),
+  ap: v => editHole(h => { const u = unitOf(curRound()); h.approach = showLen(h.approach, u) === +v ? null : toYd(+v, u); }),
+  dirt: () => editHole(h => { h.dirt = !h.dirt; }),
   fw: v => editHole(h => { h.fairway = h.fairway === v ? null : v; }),
   gir: v => editHole(h => {
     const val = v === 'y';
     // Tapping the active manual choice again hands control back to auto
     h.girOverride = h.girOverride === val ? null : val;
   }),
-  wedge: () => editHole(h => { h.wedgeBogey = !h.wedgeBogey; }),
   short: () => editHole(h => { h.shortSide = !h.shortSide; }),
   hole: i => go('hole', { hole: +i }),
   prev: () => go('hole', { hole: Math.max(0, ui.hole - 1) }),
@@ -1255,6 +1325,7 @@ const actions = {
   statsN: v => { ui.statsN = v === 'all' ? 'all' : +v; render(); },
   myStats: () => go('stats', { statsPlayer: null }),
   statsPlayer: id => { ui.statsPlayer = id; render(); },
+  boardStat: key => { ui.boardStat = key; render(); },
   playerStats: id => go('stats', { statsPlayer: id }),
 
   // Players
@@ -1347,25 +1418,32 @@ const forms = {
     readManual();
     const m = ui.manual;
     const id = 'man-' + slug(m.name);
-    const tee = { name: m.tee.trim() || 'Tees', holes: m.holes };
+    const tee = { name: m.tee.trim() || 'Tees', holes: m.holes.map(h => ({ ...h, yardage: h.yardage == null ? null : toYd(h.yardage, m.units) })) };
     const existing = db.courses.find(c => c.id === id);
     const course = existing
-      ? { ...existing, tees: [...existing.tees.filter(t => t.name !== tee.name), tee] }
-      : { id, name: m.name.trim(), city: '', lat: ui.find.pos?.lat ?? null, lon: ui.find.pos?.lon ?? null, tees: [tee] };
+      ? { ...existing, units: m.units, tees: [...existing.tees.filter(t => t.name !== tee.name), tee] }
+      : { id, name: m.name.trim(), units: m.units, city: '', lat: ui.find.pos?.lat ?? null, lon: ui.find.pos?.lon ?? null, tees: [tee] };
     upsertCourse(course);
     save();
     queueSync();
-    go('tees', { course, span: 'all' });
+    openTees(course);
   },
 };
 
 const changes = {
   // Typing a first-putt distance: update in place (no re-render) so a tap on Next isn't swallowed
   fp: el => {
-    const h = curHole();
-    h.firstPutt = el.value === '' ? null : Math.max(0, +el.value);
+    const h = curHole(), u = unitOf(curRound());
+    h.firstPutt = el.value === '' ? null : toFt(Math.max(0, +el.value), u);
     touch(curRound());
-    $app.querySelectorAll('[data-a="fp"]').forEach(b => b.classList.toggle('on', +b.dataset.v === h.firstPutt));
+    $app.querySelectorAll('[data-a="fp"]').forEach(b => b.classList.toggle('on', +b.dataset.v === showPutt(h.firstPutt, u)));
+  },
+  ap: el => {
+    const h = curHole(), u = unitOf(curRound());
+    h.approach = el.value === '' ? null : toYd(Math.max(0, +el.value), u);
+    touch(curRound());
+    $app.querySelectorAll('[data-a="ap"]').forEach(b => b.classList.toggle('on', +b.dataset.v === showLen(h.approach, u)));
+    $app.querySelector('.autos').outerHTML = autos(h);
   },
 };
 

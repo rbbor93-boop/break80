@@ -321,3 +321,5 @@ label.input { display: flex; flex-direction: column; gap: 6px; font-weight: 600;
 .rank.first { background: var(--gold); color: #3b2f00; border-color: transparent; }
 .you { font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 2px 7px; vertical-align: middle; }
 .row.static { cursor: default; }
+
+.toggle span:first-child small { display: block; font-weight: 400; font-size: 13px; color: var(--muted); margin-top: 2px; }

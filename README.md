@@ -4,7 +4,10 @@ A phone-first golf stats app for a group of players. Pick a course by GPS, log e
 
 - **Shared password** to get in, then each player creates a **profile with a 4-digit PIN**. Several players can share one phone and switch between profiles.
 - **Everyone's rounds are visible to everyone** in the app (leaderboard, latest rounds, each player's stats). Only the owner, with their PIN, can add, edit or delete their rounds.
-- **Stats per hole:** score, putts, first-putt distance, fairway (left / hit / right), green in regulation (worked out automatically), GIR+1, 3-putts, penalties, bogey with a wedge in hand, par-5 bogeys, par-3 short-sided.
+- **Stats per hole:** score, putts, first-putt distance, fairway (left / hit / right), drive into recovery territory (DIRT: no clear shot at the green after the tee shot), approach distance, penalties, par-3 short-sided.
+- **Worked out automatically:** green in regulation, GIR+1, 3-putts, par-5 bogeys, and bogeys from inside 150 (bogey or worse after an approach from under 150 yards / 137 m that didn't follow a DIRT drive; on par 3s the tee shot is the approach and defaults to the hole length).
+- **Yards or metres,** chosen when you start each round. Distances are stored in yards and feet and converted for display.
+- **Leaderboard by any stat:** switch the ranking between score, fairways, DIRT, GIR, putts and the rest.
 - **Trends:** every stat has a chart over time, a result for each round, and an improving / getting-worse indicator.
 - **Works with no signal:** rounds save on the phone first and upload when there's a connection.
 
